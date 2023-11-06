@@ -1,9 +1,9 @@
 use phase1::{Phase1, Phase1Parameters};
-use setup_utils::{blank_hash, calculate_hash, print_hash, UseCompression};
+use setup_utils::{calculate_hash, print_hash, UseCompression};
 
 use algebra::PairingEngine as Engine;
 
-use std::{fs::OpenOptions, io::Write};
+use std::{io::Write};
 use tracing::info;
 
 use std::fs::File;
@@ -22,33 +22,10 @@ pub fn new_challenge<T: Engine + Sync>(
     );
     info!("In total will generate up to {} powers", parameters.powers_g1_length);
 
-    let file = OpenOptions::new()
-        .read(true)
-        .write(true)
-        .create_new(true)
-        .open(challenge_filename)
-        .expect("unable to create challenge file");
-
     let expected_challenge_length = match COMPRESS_NEW_CHALLENGE {
         UseCompression::Yes => parameters.contribution_size - parameters.public_key_size,
         UseCompression::No => parameters.accumulator_size,
     };
-
-    file.set_len(expected_challenge_length as u64)
-        .expect("unable to allocate large enough file");
-
-    let mut writable_map = BufWriter::new(file);
-    // Write a blank BLAKE2b hash:
-    let hash = blank_hash();
-    writable_map
-        .write_all(hash.as_slice())
-        .expect("unable to write a default hash to mmap");
-    writable_map
-        .flush()
-        .expect("unable to write blank hash to challenge file");
-
-    info!("Blank hash for an empty challenge:");
-    print_hash(&hash);
 
     let mut buffer = vec![0; expected_challenge_length];
     
