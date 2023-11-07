@@ -4,8 +4,8 @@ use setup_utils::{calculate_hash, print_hash, CheckForCorrectness, SubgroupCheck
 
 use memmap::*;
 use std::{
-    fs::OpenOptions,
-    io::{Read, Write},
+    fs::{File, OpenOptions},
+    io::{BufWriter, Read, Write},
 };
 use tracing::info;
 
@@ -137,34 +137,13 @@ pub fn transform_pok_and_correctness<T: Engine + Sync>(
 
     info!("Verifying a contribution to contain proper powers and correspond to the public key...");
 
-    // Create new challenge file in this directory
-    let writer = OpenOptions::new()
-        .read(true)
-        .write(true)
-        .create_new(true)
-        .open(new_challenge_filename)
-        .expect("unable to create new challenge file in this directory");
+    let mut new_challenge_writer = BufWriter::new(
+        File::create(new_challenge_filename).expect("unable to create new challenge file in this directory"),
+    );
 
-    // Recomputation strips the public key and uses hashing to link with the previous contribution after decompression
-    writer
-        .set_len(parameters.accumulator_size as u64)
-        .expect("must make output file large enough");
+    let mut writable_map = vec![0; parameters.accumulator_size];
 
-    let mut writable_map = unsafe {
-        MmapOptions::new()
-            .map_mut(&writer)
-            .expect("unable to create a memory map for output")
-    };
-
-    {
-        (&mut writable_map[0..])
-            .write_all(response_hash.as_slice())
-            .expect("unable to write a default hash to mmap");
-
-        writable_map
-            .flush()
-            .expect("unable to write hash to new challenge file");
-    }
+    writable_map[..response_hash.len()].copy_from_slice(response_hash.as_slice());
 
     let res = Phase1::verification(
         &challenge_readable_map,
@@ -186,14 +165,26 @@ pub fn transform_pok_and_correctness<T: Engine + Sync>(
 
     writable_map.flush().expect("must flush the memory map");
 
-    let new_challenge_readable_map = writable_map.make_read_only().expect("must make a map readonly");
+    // Write the contents of writable_map to the new challenge file
+    new_challenge_writer
+        .write_all(&writable_map)
+        .expect("unable to write to new challenge file");
+    new_challenge_writer
+        .flush()
+        .expect("unable to flush new challenge file");
 
-    let recompressed_hash = calculate_hash(&new_challenge_readable_map);
+    let recompressed_hash = calculate_hash(&writable_map);
 
-    std::fs::File::create(new_challenge_hash_filename)
-        .expect("unable to open new challenge hash file")
+    let mut new_challenge_hash_file = BufWriter::new(
+        File::create(new_challenge_hash_filename)
+            .expect("unable to open new challenge hash file"),
+    );
+    new_challenge_hash_file
         .write_all(recompressed_hash.as_slice())
         .expect("unable to write new challenge hash");
+    new_challenge_hash_file
+        .flush()
+        .expect("unable to flush new challenge hash file");
 
     info!("Here's the BLAKE2b hash of the decompressed participant's response as new_challenge file:");
     print_hash(&recompressed_hash);
