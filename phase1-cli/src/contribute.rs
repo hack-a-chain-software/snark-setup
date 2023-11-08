@@ -6,9 +6,11 @@ use algebra::PairingEngine as Engine;
 use memmap::*;
 use rand::Rng;
 use std::{
-    fs::OpenOptions,
-    io::{Read, Write},
+    fs::{OpenOptions},
+    io::{Read, Write, BufWriter},
+    
 };
+use std::fs::File;
 use tracing::info;
 
 const COMPRESSED_INPUT: UseCompression = UseCompression::No;
@@ -29,7 +31,7 @@ pub fn contribute<T: Engine + Sync>(
         .read(true)
         .open(challenge_filename)
         .expect("unable open challenge file");
-    {
+    
         let metadata = reader
             .metadata()
             .expect("unable to get filesystem metadata for challenge file");
@@ -45,7 +47,7 @@ pub fn contribute<T: Engine + Sync>(
                 metadata.len()
             );
         }
-    }
+    
 
     let readable_map = unsafe {
         MmapOptions::new()
@@ -53,28 +55,12 @@ pub fn contribute<T: Engine + Sync>(
             .expect("unable to create a memory map for input")
     };
 
-    // Create response file in this directory
-    let writer = OpenOptions::new()
-        .read(true)
-        .write(true)
-        .create_new(true)
-        .open(response_filename)
-        .expect("unable to create response file");
-
     let required_output_length = match COMPRESSED_OUTPUT {
         UseCompression::Yes => parameters.contribution_size,
         UseCompression::No => parameters.accumulator_size + parameters.public_key_size,
     };
 
-    writer
-        .set_len(required_output_length as u64)
-        .expect("must make output file large enough");
-
-    let mut writable_map = unsafe {
-        MmapOptions::new()
-            .map_mut(&writer)
-            .expect("unable to create a memory map for output")
-    };
+    let mut writable_map = vec![0; required_output_length];
 
     info!("Calculating previous contribution hash...");
 
@@ -84,33 +70,17 @@ pub fn contribute<T: Engine + Sync>(
     );
     let current_accumulator_hash = calculate_hash(&readable_map);
 
-    {
-        info!("`challenge` file contains decompressed points and has a hash:");
+
+    info!("`challenge` file contains decompressed points and has a hash:");
         print_hash(&current_accumulator_hash);
         std::fs::File::create(challenge_hash_filename)
             .expect("unable to open current accumulator hash file")
             .write_all(current_accumulator_hash.as_slice())
             .expect("unable to write current accumulator hash");
 
-        (&mut writable_map[0..])
-            .write_all(current_accumulator_hash.as_slice())
-            .expect("unable to write a challenge hash to mmap");
+    writable_map[..current_accumulator_hash.len()]
+        .copy_from_slice(current_accumulator_hash.as_slice());
 
-        writable_map.flush().expect("unable to write hash to response file");
-    }
-
-    {
-        let mut challenge_hash = [0; 64];
-        let mut memory_slice = readable_map.get(0..64).expect("must read point data from file");
-        memory_slice
-            .read_exact(&mut challenge_hash)
-            .expect("couldn't read hash of challenge file from response file");
-
-        info!(
-            "`challenge` file claims (!!! Must not be blindly trusted) that it was based on the original contribution with a hash:"
-        );
-        print_hash(&challenge_hash);
-    }
 
     // Construct our keypair using the RNG we created above
     let (public_key, private_key) =
@@ -139,11 +109,15 @@ pub fn contribute<T: Engine + Sync>(
         .write(&mut writable_map, COMPRESSED_OUTPUT, &parameters)
         .expect("unable to write public key");
 
-    writable_map.flush().expect("must flush a memory map");
+    let mut file = BufWriter::new(File::create(response_filename).expect("unable to create challenge file"));
+    file.write_all(&writable_map).expect("unable to write buffer to challenge file");
+    file.flush().expect("unable to flush buffer to challenge file");
 
     // Get the hash of the contribution, so the user can compare later
-    let output_readonly = writable_map.make_read_only().expect("must make a map readonly");
-    let contribution_hash = calculate_hash(&output_readonly);
+    let mut file = File::open(response_filename).expect("unable to open challenge file for hashing");
+    let mut file_contents = Vec::new();
+    file.read_to_end(&mut file_contents).expect("unable to read challenge file");
+    let contribution_hash = calculate_hash(&file_contents);
 
     info!(
         "Done!\n\n\
